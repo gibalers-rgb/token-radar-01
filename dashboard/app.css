@@ -1,4 +1,4 @@
-/* Token Radar dashboard, radar-3. Light paper theme: navy ink, teal accent,
+/* Token Radar dashboard, radar-4. Light paper theme: navy ink, teal accent,
    amber for the top three. System fonts only, no network, no framework. */
 :root {
   --ink: #14213d;
@@ -12,6 +12,7 @@
   --amber: #b97d0a;
   --amber-soft: #fdf3dc;
   --red: #b3372e;
+  --red-soft: #fdecea;
   --green: #1e7a3c;
   --radius: 10px;
 }
@@ -39,6 +40,10 @@ section.card p { margin: 6px 0; color: var(--ink-soft); }
 .formula { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; background: #f6f8fa; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; white-space: nowrap; }
 .calib { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .calib span { background: var(--teal-soft); color: var(--teal); border-radius: 999px; padding: 3px 10px; font-size: 12.5px; font-weight: 600; }
+table.calib-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13.5px; }
+table.calib-table th, table.calib-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+table.calib-table th { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+table.calib-table td.num, table.calib-table th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .spot { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 14px; }
 .spot article { background: var(--card); border: 1px solid var(--line); border-top: 4px solid var(--amber); border-radius: var(--radius); padding: 14px 16px; }
 .spot article:first-child { border-top-color: var(--teal); }
@@ -47,6 +52,12 @@ section.card p { margin: 6px 0; color: var(--ink-soft); }
 .spot h3 { margin: 4px 0 2px; font-size: 19px; }
 .spot .val { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
 .spot .meta { color: var(--muted); font-size: 13px; }
+ol.targets { margin: 8px 0 0; padding-left: 0; list-style: none; counter-reset: target; }
+ol.targets li { border-bottom: 1px solid var(--line); }
+ol.targets li:last-child { border-bottom: 0; }
+ol.targets button { display: block; width: 100%; text-align: left; font: inherit; background: none; border: 0; padding: 9px 4px; cursor: pointer; color: var(--ink); }
+ol.targets button:hover { background: #f6f9f8; }
+ol.targets button span { color: var(--ink-soft); font-size: 13px; }
 .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
 .controls label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
 .controls input[type="search"], .controls select { font: inherit; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; min-width: 150px; }
@@ -69,7 +80,8 @@ td.rank.top3 { color: var(--amber); }
 .slug { color: var(--muted); font-size: 12px; }
 .tag { display: inline-block; background: var(--teal-soft); color: var(--teal); border-radius: 999px; padding: 1px 8px; font-size: 11.5px; font-weight: 700; margin: 1px 2px 1px 0; }
 .tag.watch { background: var(--amber-soft); color: var(--amber); }
-.tag.cool { background: #fdecea; color: var(--red); }
+.tag.cool { background: var(--red-soft); color: var(--red); }
+.tag.hot { background: #fff3e0; color: #9a6200; }
 .up { color: var(--green); font-weight: 700; }
 .down { color: var(--red); font-weight: 700; }
 .empty { padding: 26px 10px; text-align: center; color: var(--muted); }

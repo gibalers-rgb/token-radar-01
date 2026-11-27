@@ -1,12 +1,16 @@
-// Token Radar, model radar-3 (Node 22, standard library only).
+// Token Radar, model radar-4 (Node 22, standard library only).
 //
 // What this program does, in order:
 //   1. Reads the sealed DefiLlama snapshot (758 protocols, 40 on the watchlist).
-//   2. Scores the pre-token protocols with the radar-3 model in lib/model.ts
-//      and builds the ranked board: all 40 watchlist slugs plus up to 220 early
-//      pre-token protocols below the $50M floor, ranked 1..260 by implied
-//      value, each with an eight-step farm plan.
-//   3. Refuses to write anything when the board would fail the gate.
+//   2. Scores the pre-token protocols with the radar-4 model in lib/model.ts
+//      and builds the ranked board: all 40 watchlist slugs plus every
+//      rankable early pre-token protocol below the $50M floor, ranked 1..N
+//      by implied value, each with a ten-step farm plan.
+//   3. Refuses to write anything when the board would fail the gate, or
+//      when a screenshot is missing, misnamed or over the 512 KiB cap, and
+//      refuses to finish when data.js disagrees with board.json: the
+//      dashboard reads data.js and the scorer reads board.json, so the two
+//      must carry the same rows in the same order with the same values.
 //   4. Writes board.json and data.js, copies this repository's dashboard/
 //      and screenshots/, and writes dossier.json last with the vendored
 //      make.fun library, so the scorer can rebuild it from the same output
@@ -91,8 +95,12 @@ function copyFiles(from: string, to: string): string[] {
   return copied;
 }
 
-/** The screenshots the gate wants: 3 or 4 images, each a legal dossier name. */
-function checkShots(shots: string[]): void {
+/**
+ * The screenshots the gate wants: 3 or 4 images, each a legal dossier
+ * name and at most 512 KiB. A shot over the cap is refused here, before
+ * the dossier is written, so a bad image can never reach the scorer.
+ */
+function checkShots(from: string, shots: string[]): void {
   if (shots.length < 3) {
     failBoard(
       `screenshots/ holds ${shots.length} image${shots.length === 1 ? '' : 's'}: ` +
@@ -102,6 +110,10 @@ function checkShots(shots: string[]): void {
   for (const name of shots) {
     if (!IMAGE_NAME.test(name)) {
       failBoard(`screenshots/${name}: a name is letters, digits and . _ -, 1 to 128 characters`);
+    }
+    const size = statSync(join(from, name)).size;
+    if (size > SCREENSHOT_CAPS.max_bytes) {
+      failBoard(`screenshots/${name} is ${size} bytes, over the 512 KiB cap: re-export it smaller`);
     }
   }
 }
@@ -114,10 +126,33 @@ if (issue !== null) failBoard(`the model wrote a board the gate refuses: ${issue
 
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
-writeFileSync(join(out, 'data.js'), dataScript(radar));
+const dataJs = dataScript(radar);
+writeFileSync(join(out, 'data.js'), dataJs);
+
+// The dashboard reads data.js and the scorer reads board.json: prove the
+// two carry the same rows in the same order with the same values before
+// anything else is written. data.js is one assignment, `window.RADAR =
+// <json>;`, so the JSON is everything between `= ` and the final `;`.
+const dataJson = JSON.parse(dataJs.slice(dataJs.indexOf('=') + 1, dataJs.lastIndexOf(';'))) as {
+  rows?: { slug: string; implied_value_usd: number }[];
+};
+if (!Array.isArray(dataJson.rows) || dataJson.rows.length !== board.length) {
+  failBoard(
+    `data.js carries ${dataJson.rows?.length ?? 0} rows, board.json carries ${board.length}: the two must agree`,
+  );
+}
+for (let i = 0; i < board.length; i++) {
+  const a = board[i]!;
+  const b = dataJson.rows[i]!;
+  if (a.slug !== b.slug || a.implied_value_usd !== b.implied_value_usd) {
+    failBoard(
+      `data.js row ${i + 1} (${b.slug}, $${b.implied_value_usd}) does not match board.json (${a.slug}, $${a.implied_value_usd})`,
+    );
+  }
+}
 
 copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
-checkShots(copyFiles(join(here, 'screenshots'), join(out, 'screenshots')));
+checkShots(join(here, 'screenshots'), copyFiles(join(here, 'screenshots'), join(out, 'screenshots')));
 
 // The dossier is written last: the scorer rebuilds it from /output and compares bytes.
 writeFileSync(
@@ -129,9 +164,12 @@ writeFileSync(
   }),
 );
 
+const top3 = board.slice(0, 3).map((r) => `#${r.rank} ${r.slug} $${Math.round(r.implied_value_usd / 1e6)}M`).join(', ');
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ` +
     `${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
+    `token radar: model radar-4, global multiple ${radar.calibration.global_median.toFixed(3)}x, ` +
+    `total implied value $${Math.round(radar.total_implied_value_usd / 1e6)}M, top: ${top3}\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (3 files), ` +
     `${join(out, 'screenshots')} (3 images) and ${join(out, 'dossier.json')}\n`,
 );

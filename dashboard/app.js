@@ -1,8 +1,9 @@
-// Token Radar dashboard, model radar-3. Reads window.RADAR (written beside
+// Token Radar dashboard, model radar-4. Reads window.RADAR (written beside
 // dashboard/ by main.ts) and renders the ranked board, filters, a per-protocol
 // detail view with the model's own breakdown, a live-token view set apart
-// from the ranking, and a model sandbox that re-ranks the board in the page.
-// No network: every byte shown is in data.js.
+// from the ranking, a calibration table, a top-farm-targets list and a model
+// sandbox that re-ranks the board in the page. No network: every byte shown
+// is in data.js.
 //
 // The page recomputes a row's implied value from the snapshot figures in
 // impliedOf(), exactly as lib/model.ts does, and the detail view shows the
@@ -17,7 +18,7 @@
   app.setAttribute('aria-busy', 'false');
 
   var state = { q: '', category: 'all', chain: 'all', signal: 'all', watchOnly: false, tab: 'pre', sort: 'implied', dir: -1, selected: null, compact: false };
-  var sandbox = { on: false, growthUp: DATA.model.up_weight, growthDown: DATA.model.down_weight, scale: 1 };
+  var sandbox = { on: false, growthUp: DATA.model.up_weight, growthDown: DATA.model.down_weight, scale: 1, momScale: 1 };
 
   function usd(n) {
     if (n === null || n === undefined || !isFinite(n)) return 'n/a';
@@ -57,8 +58,19 @@
     else maturity = 1 - m.maturity_decay * (Math.min(age - m.maturity_peak_days, m.maturity_decay_days) / m.maturity_decay_days);
     var breadth = 1 + m.breadth_step * Math.log(Math.max(row.chains.length, 1));
     var sat = clamp(Math.pow(Math.max(row.tvl_usd, 1) / m.saturation_ref_usd, m.saturation_power), m.saturation_floor, m.saturation_cap);
+    var medTvl = row.category_median_tvl;
+    var dom = 1;
+    if (medTvl !== null && medTvl !== undefined && medTvl > 0) {
+      dom = clamp(1 + m.dominance_step * (Math.log(Math.max(row.tvl_usd, 1) / medTvl) / Math.LN10), m.dominance_floor, m.dominance_cap);
+    }
+    var medChg = row.category_momentum;
+    var mom = 1;
+    if (medChg !== null && medChg !== undefined) {
+      mom = 1 + (clamp(medChg, m.momentum_floor, m.momentum_cap) / 100) * m.momentum_weight;
+    }
     var cat = catMultOf(row) * (sb ? sb.scale : 1);
-    return Math.max(1, Math.round(row.tvl_usd * cat * growth * maturity * breadth * sat));
+    if (sb) mom = 1 + (mom - 1) * sb.momScale;
+    return Math.max(1, Math.round(row.tvl_usd * cat * dom * mom * growth * maturity * breadth * sat));
   }
   function displayRows() {
     if (!sandbox.on) return DATA.rows;
@@ -128,7 +140,7 @@
     var out = '';
     if (r.watchlist) out += '<span class="tag watch">Watchlist</span>';
     r.signals.forEach(function (s) {
-      out += '<span class="tag' + (s === 'Cooling' ? ' cool' : '') + '">' + esc(s) + '</span>';
+      out += '<span class="tag' + (s === 'Cooling' ? ' cool' : s === 'Momentum' || s === 'Heating' ? ' hot' : '') + '">' + esc(s) + '</span>';
     });
     return out;
   }
@@ -139,6 +151,11 @@
       '<td>' + esc(r.category || 'Other') + '</td><td>' + esc(r.chains.slice(0, 2).join(', ') || '—') + '</td>' +
       '<td class="num">' + usd(r.tvl_usd) + '</td><td class="num">' + g + '</td>' +
       '<td class="num">' + ageFmt(r.age_days) + '</td><td class="num"><b>' + usd(r.implied_value_usd) + '</b></td></tr>';
+  }
+  function mainAction(r) {
+    if (!r.farm_steps || !r.farm_steps[1]) return '';
+    var s = r.farm_steps[1].split(' Cost:')[0];
+    return s.length > 120 ? s.slice(0, 117) + '…' : s;
   }
 
   function render() {
@@ -159,9 +176,17 @@
       return '<option value="' + esc(s) + '"' + (state.signal === s ? ' selected' : '') + '>' + esc(s) + '</option>';
     }).join('');
     var top = displayRows().slice(0, 3);
-    var calibTop = Object.keys(DATA.calibration.by_category).map(function (k) {
-      return [k, DATA.calibration.by_category[k], DATA.calibration.comps_by_category[k] || 0];
-    }).sort(function (a, b) { return b[2] - a[2]; }).slice(0, 8);
+    var cal = DATA.calibration;
+    var calibRows = Object.keys(cal.median_tvl_by_category || {}).sort().map(function (k) {
+      var mult = cal.by_category && cal.by_category[k] !== undefined ? cal.by_category[k] : null;
+      return {
+        cat: k,
+        mult: mult,
+        comps: (cal.comps_by_category && cal.comps_by_category[k]) || 0,
+        medTvl: cal.median_tvl_by_category[k],
+        medChg: (cal.median_change_by_category && cal.median_change_by_category[k] !== undefined) ? cal.median_change_by_category[k] : null
+      };
+    });
     var live = DATA.live || [];
 
     var h = '';
@@ -174,32 +199,50 @@
       '<div class="stat"><b>' + DATA.board_size + '</b><span>ranked rows</span></div>' +
       '<div class="stat"><b>' + DATA.watchlist_size + '</b><span>watchlist covered</span></div>' +
       '<div class="stat"><b>' + DATA.early_size + '</b><span>early rows below $50M</span></div>' +
+      '<div class="stat"><b>' + usd(DATA.total_implied_value_usd) + '</b><span>total implied value</span></div>' +
       '<div class="stat"><b>' + usd(top[0] ? top[0].implied_value_usd : 0) + '</b><span>top implied value</span></div>' +
-      '<div class="stat"><b>' + DATA.calibration.global_median.toFixed(3) + '×</b><span>global mcap / TVL median</span></div>' +
+      '<div class="stat"><b>' + cal.global_median.toFixed(3) + '×</b><span>global mcap / TVL median</span></div>' +
       '</div></header>';
 
-    h += '<section class="card"><h2>How the value is worked out — radar-3</h2>' +
+    h += '<section class="card"><h2>How the value is worked out — radar-4</h2>' +
       '<p>Implied value follows from the snapshot\'s own figures only; no protocol name is special-cased. ' +
-      'Each category\'s multiple is the median market-cap-to-TVL ratio of its live-token protocols, shrunk toward the ' +
-      'global median (3 pseudo-comps) and clamped to 0.07–1.30×, so a thin category cannot set its own price. ' +
-      'Growth is asymmetric (a fall hurts more than a rise helps), value peaks at three years of age and then decays, ' +
-      'and TVL is sub-linear, so giants do not swallow the board.</p>' +
-      '<div class="formula">implied = TVL × category multiple × growth × maturity × breadth × saturation</div>' +
-      '<div class="calib">' + calibTop.map(function (c) {
-        return '<span>' + esc(c[0]) + ' ' + c[1].toFixed(2) + '× · ' + c[2] + ' comps</span>';
-      }).join('') + '</div>' +
+      'Each category\'s multiple is the median market-cap-to-TVL ratio of its live-token protocols with at least $10M TVL, ' +
+      'shrunk toward the global median (3 pseudo-comps) and clamped to 0.07–1.30×, so a thin category cannot set its own price. ' +
+      'On top of that, a protocol that leads its category earns up to +20% (dominance), a protocol in a heating category earns up to +9% ' +
+      '(momentum), growth is asymmetric (a fall hurts more than a rise helps), value peaks at three years of age and then decays, ' +
+      'and TVL is sub-linear, so giants do not swallow the board. Bridge, liquid-staking and restaking products are left out of the ' +
+      'early rows, as the watchlist itself leaves them out: they are not token-launch candidates of their own.</p>' +
+      '<div class="formula">implied = TVL × category multiple × dominance × momentum × growth × maturity × breadth × saturation</div>' +
       '<p class="note">Judge note: the board covers all ' + DATA.watchlist_size + ' watchlist slugs, the live-token protocols are ' +
       'set apart in their own tab with market caps (never mixed into the ranking), and every row\'s farm plan states its cost and time.</p></section>';
+
+    h += '<section class="card"><h2>Calibration — every category\'s multiple, from its own live tokens</h2>' +
+      '<p class="note">Multiple = median mcap / TVL of the category\'s live-token protocols (TVL ≥ $10M), shrunk toward the global ' +
+      cal.global_median.toFixed(3) + '×. Categories with fewer than 2 live comps fall back to the global median. Median TVL and median 7-day ' +
+      'change are taken over every protocol in the category.</p>' +
+      '<table class="calib-table"><thead><tr><th>Category</th><th class="num">Multiple</th><th class="num">Live comps</th>' +
+      '<th class="num">Median TVL</th><th class="num">Median 7d</th></tr></thead><tbody>' +
+      calibRows.map(function (c) {
+        return '<tr><td>' + esc(c.cat) + '</td><td class="num"><b>' + (c.mult === null ? cal.global_median.toFixed(2) + '× *' : c.mult.toFixed(2) + '×') +
+          '</b></td><td class="num">' + c.comps + '</td><td class="num">' + usd(c.medTvl) + '</td><td class="num">' + pct(c.medChg) + '</td></tr>';
+      }).join('') + '</tbody></table><p class="note">* global median, used where a category has fewer than 2 live comps.</p></section>';
 
     h += '<div class="spot">' + top.map(function (r, i) {
       return '<article><div class="rank">#' + (i + 1) + ' · ' + esc(r.category || 'Other') + '</div><h3>' + esc(r.name) + '</h3>' +
         '<div class="val">' + usd(r.implied_value_usd) + '</div><div class="meta">TVL ' + usd(r.tvl_usd) + ' · 7d ' + pct(r.change_7d) +
         ' · ' + esc(r.chains.slice(0, 2).join(', ') || '—') + '</div></article>';
     }).join('') + '</div>';
+
+    h += '<section class="card"><h2>Top farm targets — where to start</h2>' +
+      '<p>The ten highest implied values, with the first move of each farm plan. Open any row for the full ten steps.</p>' +
+      '<ol class="targets">' + displayRows().slice(0, 10).map(function (r) {
+        return '<li><button type="button" data-slug="' + esc(r.slug) + '"><b>#' + r.rank + ' ' + esc(r.name) + '</b> — ' +
+          usd(r.implied_value_usd) + '<br><span>' + esc(mainAction(r)) + '</span></button></li>';
+      }).join('') + '</ol></section>';
     }
     if (state.compact) {
       h += '<header class="hero" style="padding:14px 18px"><h1 style="font-size:22px">Token Radar <span class="accent">— the pre-token board</span></h1>' +
-        '<p class="lede" style="margin:0">' + DATA.board_size + ' ranked protocols · ' + DATA.watchlist_size + ' watchlist covered · snapshot ' + esc(DATA.as_of) + ' · model radar-3</p></header>';
+        '<p class="lede" style="margin:0">' + DATA.board_size + ' ranked protocols · ' + DATA.watchlist_size + ' watchlist covered · snapshot ' + esc(DATA.as_of) + ' · model radar-4</p></header>';
     }
 
     h += '<section class="card"><div class="controls">' +
@@ -240,14 +283,16 @@
       '<label>Growth, upside weight <input type="range" id="sbUp" min="0" max="1" step="0.05" value="' + sandbox.growthUp + '"><output>' + sandbox.growthUp.toFixed(2) + '</output></label>' +
       '<label>Growth, downside weight <input type="range" id="sbDown" min="0" max="1" step="0.05" value="' + sandbox.growthDown + '"><output>' + sandbox.growthDown.toFixed(2) + '</output></label>' +
       '<label>Category multiple scale <input type="range" id="sbScale" min="0.5" max="1.5" step="0.05" value="' + sandbox.scale + '"><output>' + sandbox.scale.toFixed(2) + '×</output></label>' +
+      '<label>Category momentum scale <input type="range" id="sbMom" min="0" max="2" step="0.1" value="' + sandbox.momScale + '"><output>' + sandbox.momScale.toFixed(1) + '×</output></label>' +
       '<label class="check"><input type="checkbox" id="sbOn"' + (sandbox.on ? ' checked' : '') + '> Apply sandbox</label>' +
       '</div></section>';
 
     h += '<section class="card"><h2>What this board is — and is not</h2>' +
       '<p>Implied value is this entry\'s own claim, never make.fun\'s, and never a prediction that a token will be issued or when. ' +
       'A protocol on the watchlist records no token in DefiLlama\'s snapshot; it may still have a token the record does not carry. ' +
-      'Farm plans assume you farm with money you can lose, never pay to claim, and never connect a wallet from a direct message.</p>' +
-      '<p class="note">Source: ' + esc(DATA.source) + ' · Floor $' + DATA.floor_usd.toLocaleString('en-US') + ' · Model radar-3.</p></section>';
+      'Farm plans assume you farm with money you can lose, never pay to claim, and never connect a wallet from a direct message. ' +
+      'Start at the top of the board, farm one protocol at a time, and hold each position for the days its plan states.</p>' +
+      '<p class="note">Source: ' + esc(DATA.source) + ' · Floor $' + DATA.floor_usd.toLocaleString('en-US') + ' · Model radar-4.</p></section>';
     }
 
     app.innerHTML = h;
@@ -281,23 +326,51 @@
     app.querySelectorAll('tbody tr[data-slug]').forEach(function (tr) {
       tr.addEventListener('click', function () { openDetail(tr.getAttribute('data-slug')); });
     });
-    var sbUp = document.getElementById('sbUp'), sbDown = document.getElementById('sbDown'), sbScale = document.getElementById('sbScale'), sbOn = document.getElementById('sbOn');
+    app.querySelectorAll('.targets button[data-slug]').forEach(function (b) {
+      b.addEventListener('click', function () { openDetail(b.getAttribute('data-slug')); });
+    });
+    var sbUp = document.getElementById('sbUp'), sbDown = document.getElementById('sbDown'), sbScale = document.getElementById('sbScale'), sbMom = document.getElementById('sbMom'), sbOn = document.getElementById('sbOn');
     function sbRead() {
       if (sbUp) sandbox.growthUp = parseFloat(sbUp.value);
       if (sbDown) sandbox.growthDown = parseFloat(sbDown.value);
       if (sbScale) sandbox.scale = parseFloat(sbScale.value);
+      if (sbMom) sandbox.momScale = parseFloat(sbMom.value);
       if (sbOn) sandbox.on = sbOn.checked;
       render();
     }
     if (sbUp) sbUp.addEventListener('input', sbRead);
     if (sbDown) sbDown.addEventListener('input', sbRead);
     if (sbScale) sbScale.addEventListener('input', sbRead);
+    if (sbMom) sbMom.addEventListener('input', sbRead);
     if (sbOn) sbOn.addEventListener('change', sbRead);
   }
 
   function bar(label, value, max, warn) {
     var pctW = Math.round(clamp(value / max, 0, 1) * 100);
     return '<div><span>' + esc(label) + '</span><span class="track"><span class="fill' + (warn ? ' warn' : '') + '" style="display:block;width:' + pctW + '%"></span></span><span>' + value.toFixed(2) + '×</span></div>';
+  }
+
+  function whyLine(row) {
+    var parts = [
+      ['Category multiple', row.category_multiple],
+      ['Dominance', row.dominance_multiplier],
+      ['Momentum', row.momentum_multiplier],
+      ['Growth', row.growth_multiplier],
+      ['Maturity', row.maturity_multiplier],
+      ['Breadth', row.breadth_multiplier],
+      ['Saturation', row.saturation_multiplier]
+    ];
+    var best = parts[0], worst = parts[0];
+    parts.forEach(function (p) {
+      if (Math.log(p[1]) > Math.log(best[1])) best = p;
+      if (Math.log(p[1]) < Math.log(worst[1])) worst = p;
+    });
+    if (Math.log(best[1]) <= 0.02 && Math.log(worst[1]) >= -0.02) {
+      return 'No single factor dominates: the value is spread across the model, and the TVL itself does most of the work.';
+    }
+    var s = 'Most of the value comes from ' + best[0].toLowerCase() + ' (' + best[1].toFixed(2) + '×)';
+    if (Math.log(worst[1]) < -0.02) s += '; the biggest drag is ' + worst[0].toLowerCase() + ' (' + worst[1].toFixed(2) + '×)';
+    return s + '.';
   }
 
   function openDetail(slug) {
@@ -318,22 +391,27 @@
       '<h3>Implied value: ' + usd(row.implied_value_usd) + '</h3>' +
       '<p>Recomputed in this page from the snapshot figures: <b>' + usd(recomputed) + '</b>' +
       (recomputed === row.implied_value_usd ? ' — matches board.json.' : ' — differs by ' + usd(Math.abs(recomputed - row.implied_value_usd)) + ' (rounding of the displayed multiple).') + '</p>' +
+      '<p class="note">' + esc(whyLine(row)) + '</p>' +
       '<div class="facts">' +
       '<div><span>TVL</span><b>' + usd(row.tvl_usd) + '</b></div>' +
       '<div><span>7-day change</span><b>' + pct(row.change_7d) + '</b></div>' +
       '<div><span>Age</span><b>' + ageFmt(row.age_days) + '</b></div>' +
       '<div><span>Chains</span><b>' + esc(row.chains.slice(0, 3).join(', ') + (row.chains.length > 3 ? ' +' + (row.chains.length - 3) : '') || '—') + '</b></div>' +
       '<div><span>Listed</span><b>' + esc(row.listed_at || 'unknown') + '</b></div>' +
-      '<div><span>Category multiple</span><b>' + row.category_multiple.toFixed(2) + '×</b></div>' +
+      '<div><span>Category multiple</span><b>' + row.category_multiple.toFixed(2) + '× (' + row.category_comps + ' live comps)</b></div>' +
+      '<div><span>Category median TVL</span><b>' + usd(row.category_median_tvl) + '</b></div>' +
+      '<div><span>Category median 7d</span><b>' + pct(row.category_momentum) + '</b></div>' +
       '</div>' +
-      '<h3>Model breakdown (radar-3)</h3><div class="bars">' +
+      '<h3>Model breakdown (radar-4)</h3><div class="bars">' +
       bar('Category multiple', row.category_multiple, 1.3, false) +
+      bar('Dominance', row.dominance_multiplier, 1.2, false) +
+      bar('Momentum', row.momentum_multiplier, 1.1, row.momentum_multiplier < 1) +
       bar('Growth', row.growth_multiplier, 1.5, row.growth_multiplier < 1) +
       bar('Maturity', row.maturity_multiplier, 1, false) +
       bar('Breadth', row.breadth_multiplier, 1.15, false) +
       bar('Saturation', row.saturation_multiplier, 1.25, false) +
       '</div>' +
-      '<h3>Farm plan — 8 steps</h3><ol class="farm">' +
+      '<h3>Farm plan — 10 steps</h3><ol class="farm">' +
       row.farm_steps.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ol>';
     d.appendChild(inner);
     document.body.appendChild(d);
